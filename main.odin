@@ -1,0 +1,223 @@
+package main
+
+import "core:fmt"
+import "core:os"
+import "core:strings"
+import "core:time"
+// import "core:unicode"
+
+Error :: union {
+  os.Error,
+  bool,
+}
+
+run_process :: proc(cmd: []string) -> Error {
+  process_desc := os.Process_Desc {
+    command = cmd,
+    stdin   = os.stdin,
+    stdout  = os.stdout,
+    stderr  = os.stderr,
+  }
+  handle := os.process_start(process_desc) or_return
+  state := os.process_wait(handle) or_return
+  return state.success
+}
+
+Target :: struct {
+  name:  string,
+  deps:  [dynamic]string,
+  execs: [dynamic][dynamic]string,
+}
+
+Set :: struct {
+  name:  string,
+  value: string,
+}
+
+Item :: union {
+  Target,
+  Set,
+}
+Items :: [dynamic]Item
+
+Parser :: struct {
+  text:   string,
+  cursor: int,
+}
+
+starts_with :: proc(parser: Parser, pattern: string) -> bool {return strings.has_prefix(parser.text[parser.cursor:], pattern)}
+skip_whitespace :: proc(parser: ^Parser) {for strings.has_prefix(parser.text[parser.cursor:], " ") do parser.cursor += 1}
+expect :: proc(parser: ^Parser, pattern: string) -> bool {
+  skip_whitespace(parser)
+  if starts_with(parser^, pattern) {
+    parser.cursor += len(pattern)
+    return true
+  }
+  fmt.eprintfln("Expected %v at location %v", pattern, parser.cursor)
+  return false
+}
+current_symbol :: proc(parser: Parser) -> u8 {return parser.text[parser.cursor]}
+advance :: proc(parser: ^Parser, n: int) -> bool {
+  parser.cursor += n
+  if parser.cursor >= len(parser.text) do return false
+  return true
+}
+parse_name :: proc(parser: ^Parser) -> (res: string, ok: bool) {
+  sb := strings.builder_make()
+  quoted_shit := false
+  if current_symbol(parser^) == '"' {
+    advance(parser, 1) or_return
+    quoted_shit = true
+  }
+  if quoted_shit {
+    cs := current_symbol(parser^)
+    escaped := false
+    for cs != '"' || (cs == '"' && escaped) {
+      escaped = false
+      if !escaped && cs == '\\' {
+        escaped = true
+      } else {
+        strings.write_byte(&sb, cs)
+      }
+      advance(parser, 1) or_return
+      cs = current_symbol(parser^)
+    }
+    expect(parser, "\"") or_return
+  } else {
+    cs := current_symbol(parser^)
+    for cs != ' ' && cs != '|' && cs != '\n' {
+      strings.write_byte(&sb, cs)
+      advance(parser, 1) or_return
+      cs = current_symbol(parser^)
+    }
+  }
+  return strings.to_string(sb), true
+}
+
+parse_exec :: proc(parser: ^Parser) -> (res: [dynamic]string, ok: bool) {
+  res = make([dynamic]string)
+  skip_whitespace(parser)
+  cs := current_symbol(parser^)
+  if cs == '}' do return nil, true
+  for cs != '\n' {
+    thing := parse_name(parser) or_return
+    append(&res, thing)
+    skip_whitespace(parser)
+    cs = current_symbol(parser^)
+  }
+  return res, true
+}
+
+parse_target :: proc(parser: ^Parser) -> (res: Target, ok: bool) {
+  expect(parser, "target") or_return
+  expect(parser, "(") or_return
+  name := parse_name(parser) or_return
+  expect(parser, "|") or_return
+  skip_whitespace(parser)
+  deps := make([dynamic]string)
+  for current_symbol(parser^) != ')' {
+    dep := parse_name(parser) or_return
+    append(&deps, dep)
+    skip_whitespace(parser)
+  }
+  expect(parser, ")") or_return
+  expect(parser, "{\n") or_return
+  execs := make([dynamic][dynamic]string)
+  for {
+    exec := parse_exec(parser) or_return
+    if exec == nil do break
+    append(&execs, exec)
+    skip_whitespace(parser)
+    expect(parser, "\n")
+  }
+  expect(parser, "}") or_return
+  return {name = name, deps = deps, execs = execs}, true
+}
+
+parse_set :: proc(parser: ^Parser) -> (res: Set, ok: bool) {
+  if starts_with(parser^, "target") do return res, false
+  expect(parser, "set") or_return
+  expect(parser, "(") or_return
+  name := parse_name(parser) or_return
+  expect(parser, "|") or_return
+  skip_whitespace(parser)
+  value := parse_name(parser) or_return
+  expect(parser, ")")
+  return {name = name, value = value}, true
+}
+
+parse_file :: proc(filename: string) -> (res: Items, err: Error) {
+  data := os.read_entire_file(filename, context.allocator) or_return
+  text := string(data)
+  parser := Parser{text, 0}
+  targets := make([dynamic]Item)
+  for parser.cursor < len(text) {
+    cursor := parser.cursor
+    set, ok_set := parse_set(&parser)
+    if !ok_set {
+      parser.cursor = cursor
+      target := parse_target(&parser) or_return
+      expect(&parser, "\n")
+      append(&targets, target)
+    } else {
+      expect(&parser, "\n")
+      append(&targets, set)
+    }
+  }
+  return targets, nil
+}
+
+run_target :: proc(target: Target, env: map[string]string) -> bool {
+  name := target.name
+  outdated := true
+  if os.exists(name) {
+    name_stat, err1 := os.stat(name, context.allocator)
+    if err1 != nil do return false
+    outdated = false
+    for dep in target.deps {
+      if !os.exists(dep) {
+        fmt.eprintfln("File does not exist %v", dep)
+        return false
+      }
+      dep_stat, err := os.stat(dep, context.allocator)
+      if err != nil do return false
+      if time.diff(dep_stat.modification_time, name_stat.modification_time) < 0 {
+        outdated = true
+        break
+      }
+    }
+  }
+  if outdated {
+    for exec in target.execs {
+      fmt.println("Running ", exec)
+      fmt.println(run_process(exec[:]))
+    }
+  }
+  return true
+}
+
+main :: proc() {
+  // fmt.println(run_process({"/bin/ls", "-la"}))
+  items, err := parse_file("test.caras")
+  switch v in err {
+  case bool: if !v do fmt.println("Fail")
+  case os.Error: if v != nil do fmt.println(v)
+  }
+  env := make(map[string]string)
+  for item in items {
+    switch v in item {
+    case Target: {
+          success := run_target(v, env)
+          if success {
+            fmt.printfln("Target %v run successfully", v.name)
+          } else {
+            fmt.printfln("Target %v failed", v.name)
+          }
+        }
+    case Set: {
+          env[v.name] = v.value
+        }
+    }
+  }
+}
+
