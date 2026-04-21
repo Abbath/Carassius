@@ -47,13 +47,14 @@ Parser :: struct {
 
 starts_with :: proc(parser: Parser, pattern: string) -> bool {return strings.has_prefix(parser.text[parser.cursor:], pattern)}
 skip_whitespace :: proc(parser: ^Parser) {for strings.has_prefix(parser.text[parser.cursor:], " ") do parser.cursor += 1}
+skip_newline :: proc(parser: ^Parser) {for parser.cursor < len(parser.text) && (parser.text[parser.cursor] == '\n' || parser.text[parser.cursor] == '\r') do parser.cursor += 1}
 expect :: proc(parser: ^Parser, pattern: string) -> bool {
   skip_whitespace(parser)
   if starts_with(parser^, pattern) {
     parser.cursor += len(pattern)
     return true
   }
-  fmt.eprintfln("Expected %v at location %v", pattern, parser.cursor)
+  fmt.eprintfln("Expected %v at location %v but got %v", pattern, parser.cursor, parser.text[parser.cursor:parser.cursor + len(pattern)])
   return false
 }
 current_symbol :: proc(parser: Parser) -> u8 {return parser.text[parser.cursor]}
@@ -85,7 +86,7 @@ parse_name :: proc(parser: ^Parser) -> (res: string, ok: bool) {
     expect(parser, "\"") or_return
   } else {
     cs := current_symbol(parser^)
-    for cs != ' ' && cs != '|' && cs != '\n' {
+    for cs != ' ' && cs != '|' && cs != '\n' && cs != '\r' {
       strings.write_byte(&sb, cs)
       advance(parser, 1) or_return
       cs = current_symbol(parser^)
@@ -99,7 +100,7 @@ parse_exec :: proc(parser: ^Parser) -> (res: [dynamic]string, ok: bool) {
   skip_whitespace(parser)
   cs := current_symbol(parser^)
   if cs == '}' do return nil, true
-  for cs != '\n' {
+  for cs != '\n' && cs != '\r' {
     thing := parse_name(parser) or_return
     append(&res, thing)
     skip_whitespace(parser)
@@ -121,14 +122,15 @@ parse_target :: proc(parser: ^Parser) -> (res: Target, ok: bool) {
     skip_whitespace(parser)
   }
   expect(parser, ")") or_return
-  expect(parser, "{\n") or_return
+  expect(parser, "{") or_return
+  skip_newline(parser)
   execs := make([dynamic][dynamic]string)
   for {
     exec := parse_exec(parser) or_return
     if exec == nil do break
     append(&execs, exec)
     skip_whitespace(parser)
-    expect(parser, "\n")
+    skip_newline(parser)
   }
   expect(parser, "}") or_return
   return {name = name, deps = deps, execs = execs}, true
@@ -157,10 +159,10 @@ parse_file :: proc(filename: string) -> (res: Items, err: Error) {
     if !ok_set {
       parser.cursor = cursor
       target := parse_target(&parser) or_return
-      expect(&parser, "\n")
+      skip_newline(&parser)
       append(&targets, target)
     } else {
-      expect(&parser, "\n")
+      skip_newline(&parser)
       append(&targets, set)
     }
   }
