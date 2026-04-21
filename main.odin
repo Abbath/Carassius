@@ -172,15 +172,15 @@ parse_file :: proc(filename: string) -> (res: Items, err: Error) {
 run_target :: proc(target: Target, env: map[string]string) -> bool {
   name := target.name
   outdated := true
+  for dep in target.deps do if !os.exists(dep) {
+    fmt.eprintfln("File does not exist %v", dep)
+    return false
+  }
   if os.exists(name) {
     name_stat, err1 := os.stat(name, context.allocator)
     if err1 != nil do return false
     outdated = false
     for dep in target.deps {
-      if !os.exists(dep) {
-        fmt.eprintfln("File does not exist %v", dep)
-        return false
-      }
       dep_stat, err := os.stat(dep, context.allocator)
       if err != nil do return false
       if time.diff(dep_stat.modification_time, name_stat.modification_time) < 0 {
@@ -189,11 +189,9 @@ run_target :: proc(target: Target, env: map[string]string) -> bool {
       }
     }
   }
-  if outdated {
-    for exec in target.execs {
-      fmt.println("Running ", exec)
-      fmt.println(run_process(exec[:]))
-    }
+  if outdated do for exec in target.execs {
+    fmt.println("Running ", exec)
+    fmt.println(run_process(exec[:]))
   }
   return true
 }
