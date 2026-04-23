@@ -12,7 +12,7 @@ Error :: union {
   bool,
 }
 
-run_process :: proc(cmd: []string) -> Error {
+run_process :: proc(cmd: []string) -> (exit_code: int, err: Error) {
   process_desc := os.Process_Desc {
     command = cmd,
     stdin   = os.stdin,
@@ -21,7 +21,7 @@ run_process :: proc(cmd: []string) -> Error {
   }
   handle := os.process_start(process_desc) or_return
   state := os.process_wait(handle) or_return
-  return state.success
+  return state.exit_code, state.success
 }
 
 Target :: struct {
@@ -207,43 +207,58 @@ parse_file :: proc(filename: string) -> (res: Items, err: Error) {
   return targets, nil
 }
 
-run_target :: proc(target: Target, env: map[string]string, rerun: bool = false) -> bool {
+run_target :: proc(target: Target, env: map[string]string, rerun: bool = false) -> (success: bool, run: bool) {
   name := target.name
   outdated := true
   for dep in target.deps do if !os.exists(dep) {
     fmt.eprintfln("File does not exist %v", dep)
-    return false
+    return false, false
   }
   if os.exists(name) {
     name_stat, err1 := os.stat(name, context.allocator)
-    if err1 != nil do return false
+    if err1 != nil do return false, false
     outdated = false
     for dep in target.deps {
       dep_stat, err := os.stat(dep, context.allocator)
-      if err != nil do return false
+      if err != nil do return false, false
       if time.diff(dep_stat.modification_time, name_stat.modification_time) < 0 {
         outdated = true
         break
       }
     }
   }
-  if outdated || rerun do for exec in target.execs {
-    sb := strings.builder_make()
-    processed_exec := make([dynamic]string)
-    for thing in exec {
-      new_thing := expand_vars(thing, env)
-      append(&processed_exec, new_thing)
-      strings.write_string(&sb, new_thing)
-      strings.write_byte(&sb, ' ')
-    }
-    fmt.println("Running: ", strings.to_string(sb))
-    process_result := run_process(processed_exec[:])
-    switch v in process_result {
-    case bool: if !v do fmt.eprintln("Process failed")
-    case os.Error: if v != nil do fmt.eprintfln("Process failed with %v", v)
+  run = false
+  success = true
+  if outdated || rerun {
+    run = true
+    for exec in target.execs {
+      sb := strings.builder_make()
+      processed_exec := make([dynamic]string)
+      for thing in exec {
+        new_thing := expand_vars(thing, env)
+        append(&processed_exec, new_thing)
+        strings.write_string(&sb, new_thing)
+        strings.write_byte(&sb, ' ')
+      }
+      fmt.println("Running: ", strings.to_string(sb))
+      exit_code, process_result := run_process(processed_exec[:])
+      if exit_code != 0 {
+        fmt.eprintfln("Process failed with code: %v", exit_code)
+        success = false
+      }
+      switch v in process_result {
+      case bool: if !v {
+            fmt.eprintln("Process failed")
+            success = false
+          }
+      case os.Error: if v != nil {
+            fmt.eprintfln("Process failed with %v", v)
+            success = false
+          }
+      }
     }
   }
-  return true
+  return success, run
 }
 
 Options :: struct {
@@ -265,9 +280,10 @@ main :: proc() {
   for item in items {
     switch v in item {
     case Target: {
-          success := run_target(v, env, opts.rerun)
+          success, run := run_target(v, env, opts.rerun)
           if success {
-            fmt.printfln("Target %v run successfully", v.name)
+            if run do fmt.printfln("Target %v run successfully", v.name)
+            else do fmt.println("Nothing to do")
           } else {
             fmt.printfln("Target %v failed", v.name)
           }

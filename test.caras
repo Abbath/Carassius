@@ -1,4 +1,4 @@
-set(OFLAGS | -debug )
+set(OFLAGS | "-out:gg -debug" )
 target(gg| main.odin debug.odin ) {
-  odin build . -out:gg $OFLAGS
+  odin build . $OFLAGS
 }
