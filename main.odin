@@ -3,6 +3,7 @@ package main
 import "core:flags"
 import "core:fmt"
 import "core:os"
+import "core:strconv"
 import "core:strings"
 import "core:time"
 import "core:unicode"
@@ -35,15 +36,86 @@ Set :: struct {
   value: string,
 }
 
+Op :: enum {
+  EQ,
+  NE,
+  LT,
+  GT,
+  LE,
+  GE,
+  AND,
+  OR,
+}
+
+Operand :: union {
+  Cond,
+  string,
+  int,
+  bool,
+}
+
+Cond :: struct {
+  operand1: ^Operand,
+  operand2: ^Operand,
+  operator: Op,
+}
+
+If :: struct {
+  cond: Operand,
+}
+
+EndIf :: struct {}
+
 Item :: union {
   Target,
   Set,
+  If,
+  EndIf,
 }
 Items :: [dynamic]Item
 
 Parser :: struct {
   text:   string,
   cursor: int,
+}
+
+compute_cond :: proc(cond: Cond) -> Operand {
+  switch cond.operator {
+  case .AND: return op_to_bool(cond.operand1^) && op_to_bool(cond.operand2^)
+  case .OR: return op_to_bool(cond.operand1^) || op_to_bool(cond.operand2^)
+  case .EQ: return eq_ops(cond.operand1^, cond.operand2^)
+  case .NE: return !eq_ops(cond.operand1^, cond.operand2^)
+  case .LT: return false
+  case .GT: return false
+  case .LE: return false
+  case .GE: return false
+  }
+  return true
+}
+
+eq_ops :: proc(op1, op2: Operand) -> bool {
+  c1, ok1 := op1.(Cond)
+  c2, ok2 := op2.(Cond)
+  if ok1 && ok2 {
+    return compute_cond(c1) == compute_cond(c2)
+  }
+  if ok1 && !ok2 {
+    return compute_cond(c1) == op_to_bool(op2)
+  }
+  if !ok1 && ok2 {
+    return compute_cond(c2) == op_to_bool(op1)
+  }
+  return op1 == op2
+}
+
+op_to_bool :: proc(op: Operand) -> bool {
+  switch v in op {
+  case Cond: return op_to_bool(compute_cond(v))
+  case string: return v == "true" || v == "1"
+  case int: return v != 0
+  case bool: return v
+  }
+  return false
 }
 
 starts_with :: proc(parser: Parser, pattern: string) -> bool {return strings.has_prefix(parser.text[parser.cursor:], pattern)}
@@ -87,7 +159,7 @@ parse_name :: proc(parser: ^Parser) -> (res: string, ok: bool) {
     expect(parser, "\"") or_return
   } else {
     cs := current_symbol(parser^)
-    for cs != ' ' && cs != '|' && cs != '\n' && cs != '\r' {
+    for cs != ' ' && cs != '|' && cs != '\n' && cs != '\r' && cs != ')' {
       strings.write_byte(&sb, cs)
       advance(parser, 1) or_return
       cs = current_symbol(parser^)
@@ -175,7 +247,6 @@ parse_target :: proc(parser: ^Parser) -> (res: Target, ok: bool) {
 }
 
 parse_set :: proc(parser: ^Parser) -> (res: Set, ok: bool) {
-  if starts_with(parser^, "target") do return res, false
   expect(parser, "set") or_return
   expect(parser, "(") or_return
   name := parse_name(parser) or_return
@@ -186,25 +257,103 @@ parse_set :: proc(parser: ^Parser) -> (res: Set, ok: bool) {
   return {name = name, value = value}, true
 }
 
+parse_term :: proc(parser: ^Parser) -> (res: Operand, ok: bool) {
+  skip_whitespace(parser)
+  thing := parse_name(parser) or_return
+  val, ok_int := strconv.parse_int(thing)
+  if ok_int {
+    return val, true
+  }
+  if thing == "true" || thing == "false" {
+    return strconv.parse_bool(thing)
+  }
+  return thing, true
+}
+
+parse_eq :: proc(parser: ^Parser) -> (res: Operand, ok: bool) {
+  operand1 := parse_term(parser) or_return
+  skip_whitespace(parser)
+  if starts_with(parser^, "==") || starts_with(parser^, "/=") {
+    advance(parser, 2) or_return
+    cond: Cond
+    cond.operand1 = new(Operand)
+    cond.operand2 = new(Operand)
+    cond.operator = .EQ
+    cond.operand1^ = operand1
+    cond.operand2^ = parse_eq(parser) or_return
+    return cond, true
+  }
+  return operand1, true
+}
+
+parse_or :: proc(parser: ^Parser) -> (res: Operand, ok: bool) {
+  operand1 := parse_eq(parser) or_return
+  skip_whitespace(parser)
+  if starts_with(parser^, "||") {
+    advance(parser, 2) or_return
+    cond: Cond
+    cond.operand1 = new(Operand)
+    cond.operand2 = new(Operand)
+    cond.operator = .OR
+    cond.operand1^ = operand1
+    cond.operand2^ = parse_or(parser) or_return
+    return cond, true
+  }
+  return operand1, true
+}
+
+parse_op :: proc(parser: ^Parser) -> (res: Operand, ok: bool) {
+  operand1 := parse_or(parser) or_return
+  skip_whitespace(parser)
+  if starts_with(parser^, "&&") {
+    advance(parser, 2) or_return
+    cond: Cond
+    cond.operand1 = new(Operand)
+    cond.operand2 = new(Operand)
+    cond.operator = .AND
+    cond.operand1^ = operand1
+    cond.operand2^ = parse_op(parser) or_return
+    return cond, true
+  }
+  return operand1, true
+}
+
+parse_if :: proc(parser: ^Parser) -> (res: If, ok: bool) {
+  expect(parser, "if") or_return
+  expect(parser, "(") or_return
+  cond := parse_op(parser) or_return
+  expect(parser, ")") or_return
+  return {cond = cond}, true
+}
+
 parse_file :: proc(filename: string) -> (res: Items, err: Error) {
   data := os.read_entire_file(filename, context.allocator) or_return
   text := string(data)
   parser := Parser{text, 0}
-  targets := make([dynamic]Item)
+  items := make([dynamic]Item)
   for parser.cursor < len(text) {
-    cursor := parser.cursor
-    set, ok_set := parse_set(&parser)
-    if !ok_set {
-      parser.cursor = cursor
+    if starts_with(parser, "set") {
+      set := parse_set(&parser) or_return
+      skip_newline(&parser)
+      append(&items, set)
+    }
+    if starts_with(parser, "target") {
       target := parse_target(&parser) or_return
       skip_newline(&parser)
-      append(&targets, target)
-    } else {
+      append(&items, target)
+    }
+    if starts_with(parser, "if") {
+      iff := parse_if(&parser) or_return
       skip_newline(&parser)
-      append(&targets, set)
+      append(&items, iff)
+    }
+    if starts_with(parser, "endif") {
+      expect(&parser, "endif")
+      skip_newline(&parser)
+      append(&items, EndIf{})
     }
   }
-  return targets, nil
+  return items, nil
 }
 
 run_target :: proc(target: Target, env: map[string]string, rerun: bool = false) -> (success: bool, run: bool) {
@@ -240,7 +389,7 @@ run_target :: proc(target: Target, env: map[string]string, rerun: bool = false) 
         strings.write_string(&sb, new_thing)
         strings.write_byte(&sb, ' ')
       }
-      fmt.println("Running: ", strings.to_string(sb))
+      fmt.println("Running:", strings.to_string(sb))
       exit_code, process_result := run_process(processed_exec[:])
       if exit_code != 0 {
         fmt.eprintfln("Process failed with code: %v", exit_code)
@@ -262,24 +411,32 @@ run_target :: proc(target: Target, env: map[string]string, rerun: bool = false) 
 }
 
 Options :: struct {
-  rerun: bool `args:"name=B" usage:"Rerun no matter what"`,
+  target: string `args:"pos=0" usage:"Specific target name"`,
+  rerun:  bool `args:"name=B" usage:"Rerun no matter what"`,
 }
 
 main :: proc() {
   when ODIN_DEBUG {
     debug_stuff()
   }
-  items, err := parse_file("test.caras")
-  switch v in err {
-  case bool: if !v do fmt.println("Fail")
-  case os.Error: if v != nil do fmt.println(v)
-  }
   opts: Options
   flags.parse_or_exit(&opts, os.args)
+  items, err := parse_file("test.caras")
+  switch v in err {
+  case bool: if !v {
+        fmt.println("Fail")
+        return
+      }
+  case os.Error: if v != nil {
+        fmt.println(v)
+      }
+  }
   env := make(map[string]string)
+  execute := true
   for item in items {
     switch v in item {
     case Target: {
+          if opts.target != "" && v.name != opts.target || !execute do continue
           success, run := run_target(v, env, opts.rerun)
           if success {
             if run do fmt.printfln("Target %v run successfully", v.name)
@@ -289,8 +446,16 @@ main :: proc() {
           }
         }
     case Set: {
+          if !execute do continue
           value := expand_vars(v.value, env)
           env[v.name] = value
+        }
+    case If: {
+          val := op_to_bool(v.cond)
+          execute = val
+        }
+    case EndIf: {
+          execute = true
         }
     }
   }

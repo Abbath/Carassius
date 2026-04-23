@@ -1,4 +1,9 @@
+if( 1 == 2 )
 set(OFLAGS | "-out:gg -debug" )
+target(gg| main.odin debug.odin ) {
+  odin build . $OFLAGS
+}
+endif
 target(gg| main.odin debug.odin ) {
   odin build . $OFLAGS
 }
