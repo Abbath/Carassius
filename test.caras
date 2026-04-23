@@ -1,7 +1,4 @@
-set(CFLAGS | -std=c99 )
-target(dupa| dupa.c ) {
-  gcc -o dupa dupa.c
-}
-target(dupa| dupa.c ) {
-  gcc -o dupa dupa.c
+set(OFLAGS | -debug )
+target(gg| main.odin debug.odin ) {
+  odin build . -out:gg $OFLAGS
 }

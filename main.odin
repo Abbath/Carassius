@@ -1,10 +1,11 @@
 package main
 
+import "core:flags"
 import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:time"
-// import "core:unicode"
+import "core:unicode"
 
 Error :: union {
   os.Error,
@@ -95,6 +96,43 @@ parse_name :: proc(parser: ^Parser) -> (res: string, ok: bool) {
   return strings.to_string(sb), true
 }
 
+expand_vars :: proc(input: string, env: map[string]string) -> (res: string) {
+  if !strings.contains(input, "$") do return input
+  sb := strings.builder_make()
+  lil_sb := strings.builder_make()
+  gathering := false
+  for c, idx in input {
+    if c == '$' {
+      if idx < len(input) - 1 && input[idx + 1] == '$' do continue
+      strings.builder_reset(&lil_sb)
+      gathering = true
+      continue
+    }
+    if gathering {
+      if !unicode.is_alpha(c) && !unicode.is_digit(c) && c != '_' {
+        gathering = false
+        strings.write_rune(&sb, c)
+      } else {
+        strings.write_rune(&lil_sb, c)
+        partial := strings.to_string(lil_sb)
+        if partial in env {
+          strings.write_string(&sb, env[partial])
+          gathering = false
+        } else {
+          val, found := os.lookup_env(partial, context.allocator)
+          if found {
+            strings.write_string(&sb, val)
+            gathering = false
+          }
+        }
+      }
+    } else {
+      strings.write_rune(&sb, c)
+    }
+  }
+  return strings.to_string(sb)
+}
+
 parse_exec :: proc(parser: ^Parser) -> (res: [dynamic]string, ok: bool) {
   res = make([dynamic]string)
   skip_whitespace(parser)
@@ -169,7 +207,7 @@ parse_file :: proc(filename: string) -> (res: Items, err: Error) {
   return targets, nil
 }
 
-run_target :: proc(target: Target, env: map[string]string) -> bool {
+run_target :: proc(target: Target, env: map[string]string, rerun: bool = false) -> bool {
   name := target.name
   outdated := true
   for dep in target.deps do if !os.exists(dep) {
@@ -189,25 +227,45 @@ run_target :: proc(target: Target, env: map[string]string) -> bool {
       }
     }
   }
-  if outdated do for exec in target.execs {
-    fmt.println("Running ", exec)
-    fmt.println(run_process(exec[:]))
+  if outdated || rerun do for exec in target.execs {
+    sb := strings.builder_make()
+    processed_exec := make([dynamic]string)
+    for thing in exec {
+      new_thing := expand_vars(thing, env)
+      append(&processed_exec, new_thing)
+      strings.write_string(&sb, new_thing)
+      strings.write_byte(&sb, ' ')
+    }
+    fmt.println("Running: ", strings.to_string(sb))
+    process_result := run_process(processed_exec[:])
+    switch v in process_result {
+    case bool: if !v do fmt.eprintln("Process failed")
+    case os.Error: if v != nil do fmt.eprintfln("Process failed with %v", v)
+    }
   }
   return true
 }
 
+Options :: struct {
+  rerun: bool `args:"name=B" usage:"Rerun no matter what"`,
+}
+
 main :: proc() {
-  // fmt.println(run_process({"/bin/ls", "-la"}))
+  when ODIN_DEBUG {
+    debug_stuff()
+  }
   items, err := parse_file("test.caras")
   switch v in err {
   case bool: if !v do fmt.println("Fail")
   case os.Error: if v != nil do fmt.println(v)
   }
+  opts: Options
+  flags.parse_or_exit(&opts, os.args)
   env := make(map[string]string)
   for item in items {
     switch v in item {
     case Target: {
-          success := run_target(v, env)
+          success := run_target(v, env, opts.rerun)
           if success {
             fmt.printfln("Target %v run successfully", v.name)
           } else {
@@ -215,7 +273,8 @@ main :: proc() {
           }
         }
     case Set: {
-          env[v.name] = v.value
+          value := expand_vars(v.value, env)
+          env[v.name] = value
         }
     }
   }
