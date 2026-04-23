@@ -83,8 +83,8 @@ compute_cond :: proc(cond: Cond) -> Operand {
   switch cond.operator {
   case .AND: return op_to_bool(cond.operand1^) && op_to_bool(cond.operand2^)
   case .OR: return op_to_bool(cond.operand1^) || op_to_bool(cond.operand2^)
-  case .EQ: return eq_ops(cond.operand1^, cond.operand2^)
-  case .NE: return !eq_ops(cond.operand1^, cond.operand2^)
+  case .EQ: return compute_op(cond.operand1^) == compute_op(cond.operand2^)
+  case .NE: return compute_op(cond.operand1^) != compute_op(cond.operand2^)
   case .LT: return false
   case .GT: return false
   case .LE: return false
@@ -93,19 +93,12 @@ compute_cond :: proc(cond: Cond) -> Operand {
   return true
 }
 
-eq_ops :: proc(op1, op2: Operand) -> bool {
-  c1, ok1 := op1.(Cond)
-  c2, ok2 := op2.(Cond)
-  if ok1 && ok2 {
-    return compute_cond(c1) == compute_cond(c2)
+compute_op :: proc(op: Operand) -> Operand {
+  switch v in op {
+  case Cond: return compute_cond(v)
+  case int, bool, string: return v
   }
-  if ok1 && !ok2 {
-    return compute_cond(c1) == op_to_bool(op2)
-  }
-  if !ok1 && ok2 {
-    return compute_cond(c2) == op_to_bool(op1)
-  }
-  return op1 == op2
+  return nil
 }
 
 op_to_bool :: proc(op: Operand) -> bool {
@@ -273,12 +266,14 @@ parse_term :: proc(parser: ^Parser) -> (res: Operand, ok: bool) {
 parse_eq :: proc(parser: ^Parser) -> (res: Operand, ok: bool) {
   operand1 := parse_term(parser) or_return
   skip_whitespace(parser)
-  if starts_with(parser^, "==") || starts_with(parser^, "/=") {
+  eq := starts_with(parser^, "==")
+  neq := starts_with(parser^, "/=")
+  if eq || neq {
     advance(parser, 2) or_return
     cond: Cond
     cond.operand1 = new(Operand)
     cond.operand2 = new(Operand)
-    cond.operator = .EQ
+    cond.operator = .EQ if eq else .NE
     cond.operand1^ = operand1
     cond.operand2^ = parse_eq(parser) or_return
     return cond, true
