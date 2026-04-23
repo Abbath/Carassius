@@ -427,8 +427,9 @@ main :: proc() {
       }
   }
   env := make(map[string]string)
-  execute := true
+  executors := make([dynamic]bool)
   for item in items {
+    execute := executors[len(executors) - 1]
     switch v in item {
     case Target: {
           if opts.target != "" && v.name != opts.target || !execute do continue
@@ -446,11 +447,15 @@ main :: proc() {
           env[v.name] = value
         }
     case If: {
+          if !execute {
+            append(&executors, false)
+            continue
+          }
           val := op_to_bool(v.cond)
-          execute = val
+          append(&executors, val)
         }
     case EndIf: {
-          execute = true
+          pop(&executors)
         }
     }
   }
