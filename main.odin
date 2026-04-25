@@ -422,41 +422,34 @@ main :: proc() {
         fmt.println("Fail")
         return
       }
-  case os.Error: if v != nil {
-        fmt.println(v)
-      }
+  case os.Error: if v != nil do fmt.println(v)
   }
   env := make(map[string]string)
   executors := make([dynamic]bool)
   for item in items {
     execute := executors[len(executors) - 1]
     switch v in item {
-    case Target: {
-          if opts.target != "" && v.name != opts.target || !execute do continue
-          success, run := run_target(v, env, opts.rerun)
-          if success {
-            if run do fmt.printfln("Target %v run successfully", v.name)
-            else do fmt.println("Nothing to do")
-          } else {
-            fmt.printfln("Target %v failed", v.name)
-          }
-        }
-    case Set: {
-          if !execute do continue
-          value := expand_vars(v.value, env)
-          env[v.name] = value
-        }
-    case If: {
-          if !execute {
-            append(&executors, false)
-            continue
-          }
-          val := op_to_bool(v.cond)
-          append(&executors, val)
-        }
-    case EndIf: {
-          pop(&executors)
-        }
+    case Target:
+      if opts.target != "" && v.name != opts.target || !execute do continue
+      success, run := run_target(v, env, opts.rerun)
+      if success {
+        if run do fmt.printfln("Target %v run successfully", v.name)
+        else do fmt.println("Nothing to do")
+      } else {
+        fmt.printfln("Target %v failed", v.name)
+      }
+    case Set:
+      if !execute do continue
+      value := expand_vars(v.value, env)
+      env[v.name] = value
+    case If:
+      if !execute {
+        append(&executors, false)
+        continue
+      }
+      val := op_to_bool(v.cond)
+      append(&executors, val)
+    case EndIf: pop(&executors)
     }
   }
 }
