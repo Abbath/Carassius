@@ -492,6 +492,7 @@ grind_items :: proc(items: ^[dynamic]Item) -> bool {
 }
 
 Options :: struct {
+  input:   string `args:"name=I" usage:"Input file (default: build.caras)"`,
   vars:    [dynamic]string `args:"name=D,manifold" usage:"User defined vars"`,
   targets: [dynamic]string `args:"name=T,manifold" usage:"Specific target names"`,
   rerun:   bool `args:"name=B" usage:"Rerun no matter what"`,
@@ -501,9 +502,11 @@ main :: proc() {
   when ODIN_DEBUG {
     debug_stuff()
   }
-  opts: Options
+  opts := Options {
+    input = "build.caras",
+  }
   flags.parse_or_exit(&opts, os.args, .Unix)
-  items, err := parse_file("test.caras")
+  items, err := parse_file(opts.input)
   switch v in err {
   case bool: if !v {
         fmt.eprintln("Fail")
