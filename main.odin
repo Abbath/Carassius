@@ -9,6 +9,8 @@ import "core:strings"
 import "core:time"
 import "core:unicode"
 
+SENTINEL :: -1
+
 Env :: distinct map[string]string
 
 Error :: union {
@@ -84,6 +86,17 @@ Fart :: struct {
   whisper: string,
 }
 
+Loop :: struct {
+  name:     string,
+  elements: [dynamic]string,
+  cursor:   int,
+  jump:     int,
+}
+
+EndLoop :: struct {
+  jump: int,
+}
+
 Item :: union {
   Target,
   Set,
@@ -92,6 +105,8 @@ Item :: union {
   Else,
   EndIf,
   Fart,
+  Loop,
+  EndLoop,
 }
 Items :: [dynamic]Item
 
@@ -350,7 +365,7 @@ parse_if :: proc(parser: ^Parser) -> (res: If, ok: bool) {
   expect(parser, "(") or_return
   cond := parse_op(parser) or_return
   expect(parser, ")") or_return
-  return {cond = cond}, true
+  return {cond = cond, jump_end = SENTINEL, jump_else = SENTINEL}, true
 }
 
 parse_fart :: proc(parser: ^Parser) -> (res: Fart, ok: bool) {
@@ -359,6 +374,22 @@ parse_fart :: proc(parser: ^Parser) -> (res: Fart, ok: bool) {
   whisper := parse_name(parser) or_return
   expect(parser, ")") or_return
   return {whisper = whisper}, true
+}
+
+parse_loop :: proc(parser: ^Parser) -> (res: Loop, ok: bool) {
+  expect(parser, "loop") or_return
+  expect(parser, "(") or_return
+  name := parse_name(parser) or_return
+  expect(parser, "|") or_return
+  skip_whitespace(parser)
+  elems := make([dynamic]string)
+  for current_symbol(parser^) != ')' {
+    dep := parse_name(parser) or_return
+    append(&elems, dep)
+    skip_whitespace(parser)
+  }
+  expect(parser, ")") or_return
+  return {name = name, elements = elems, jump = SENTINEL}, true
 }
 
 parse_file :: proc(filename: string) -> (res: Items, err: Error) {
@@ -387,13 +418,13 @@ parse_file :: proc(filename: string) -> (res: Items, err: Error) {
       skip_newline(&parser)
       append(&items, iff)
     }
-    if starts_with(parser, "else") {
-      expect(&parser, "else") or_return
+    if token := "else"; starts_with(parser, token) {
+      expect(&parser, token) or_return
       skip_newline(&parser)
-      append(&items, Else{})
+      append(&items, Else{jump = SENTINEL})
     }
-    if starts_with(parser, "endif") {
-      expect(&parser, "endif") or_return
+    if token := "endif"; starts_with(parser, token) {
+      expect(&parser, token) or_return
       skip_newline(&parser)
       append(&items, EndIf{})
     }
@@ -401,6 +432,16 @@ parse_file :: proc(filename: string) -> (res: Items, err: Error) {
       fart := parse_fart(&parser) or_return
       skip_newline(&parser)
       append(&items, fart)
+    }
+    if starts_with(parser, "loop") {
+      loop := parse_loop(&parser) or_return
+      skip_newline(&parser)
+      append(&items, loop)
+    }
+    if token := "endloop"; starts_with(parser, token) {
+      expect(&parser, token) or_return
+      skip_newline(&parser)
+      append(&items, EndLoop{jump = SENTINEL})
     }
   }
   return items, nil
@@ -461,34 +502,45 @@ run_target :: proc(target: Target, env: Env, rerun: bool = false) -> (success: b
 }
 
 grind_items :: proc(items: ^[dynamic]Item) -> bool {
-  last_if_idx := -1
-  last_else_idx := -1
+  last_if_idx := SENTINEL
+  last_else_idx := SENTINEL
+  last_loop_idx := SENTINEL
   for &item, idx in items {
-    #partial switch v in item {
+    #partial switch &v in item {
     case If: last_if_idx = idx
     case Else:
-      if last_if_idx != -1 {
-        x, ok := &items[last_if_idx].(If)
-        if !ok do return false
+      if last_if_idx != SENTINEL {
+        x := (&items[last_if_idx].(If)) or_return
         x.jump_else = idx
       }
       last_else_idx = idx
     case EndIf:
-      if last_if_idx != -1 {
-        x, ok := &items[last_if_idx].(If)
-        if !ok do return false
+      if last_if_idx != SENTINEL {
+        x := (&items[last_if_idx].(If)) or_return
         x.jump_end = idx
-        last_if_idx = -1
+        last_if_idx = SENTINEL
       }
-      if last_else_idx != -1 {
-        x, ok := &items[last_else_idx].(Else)
-        if !ok do return false
+      if last_else_idx != SENTINEL {
+        x := (&items[last_else_idx].(Else)) or_return
         x.jump = idx
-        last_else_idx = -1
+        last_else_idx = SENTINEL
       }
+    case Loop: last_loop_idx = idx
+    case EndLoop: if last_loop_idx != SENTINEL {
+          x := (&items[last_loop_idx].(Loop)) or_return
+          x.jump = idx
+          v.jump = last_loop_idx
+          last_loop_idx = SENTINEL
+        }
     }
   }
   return true
+}
+
+print_items :: proc(items: [dynamic]Item) {
+  for item, idx in items {
+    fmt.println(idx, item)
+  }
 }
 
 Options :: struct {
@@ -496,6 +548,7 @@ Options :: struct {
   vars:    [dynamic]string `args:"name=D,manifold" usage:"User defined vars"`,
   targets: [dynamic]string `args:"name=T,manifold" usage:"Specific target names"`,
   rerun:   bool `args:"name=B" usage:"Rerun no matter what"`,
+  debug:   bool `usage:"Debug prints"`,
 }
 
 main :: proc() {
@@ -519,6 +572,7 @@ main :: proc() {
     fmt.eprintln("Ifs and elses are borked")
     return
   }
+  if opts.debug do print_items(items)
   env := make(Env)
   for var in opts.vars {
     parts, err := strings.split_n(var, "=", 2)
@@ -530,13 +584,13 @@ main :: proc() {
     if len(parts) == 1 do env[parts[0]] = "true"
   }
   for index := 0; index < len(items); index += 1 {
-    item := items[index]
-    switch v in item {
+    item := &items[index]
+    switch &v in item {
     case Target:
       if len(opts.targets) != 0 && !slice.contains(opts.targets[:], v.name) do continue
       success, run := run_target(v, env, opts.rerun)
       if success {
-        if run do fmt.printfln("Target %v run successfully", v.name)
+        if run && opts.debug do fmt.printfln("Target %v run successfully", v.name)
         else do fmt.println("Nothing to do")
       } else {
         fmt.printfln("Target %v failed", v.name)
@@ -552,12 +606,12 @@ main :: proc() {
         fmt.eprintln("Key was not there in the first place")
       }
     case If:
-      if v.jump_end == 0 {
+      if v.jump_end == SENTINEL {
         fmt.eprintln("Unbounded if")
         break
       }
       val := op_to_bool(v.cond, env)
-      if v.jump_else != 0 {
+      if v.jump_else != SENTINEL {
         x, ok := &items[v.jump_else].(Else)
         if !ok {
           fmt.eprintln("This is not else")
@@ -565,15 +619,21 @@ main :: proc() {
         }
         x.exec = !val
       }
-      if !val do index = v.jump_else != 0 ? v.jump_else : v.jump_end
+      if !val do index = v.jump_else != SENTINEL ? v.jump_else : v.jump_end
     case Else:
-      if v.jump == 0 {
+      if v.jump == SENTINEL {
         fmt.eprintln("Unbounded else")
         break
       }
       if !v.exec do index = v.jump
     case EndIf: {}
     case Fart: fmt.println(expand_vars(v.whisper, env))
+    case Loop: if v.cursor >= len(v.elements) do index = v.jump
+        else {
+          env[expand_vars(v.name, env)] = v.elements[v.cursor]
+          v.cursor += 1
+        }
+    case EndLoop: index = v.jump - 1
     }
   }
 }
