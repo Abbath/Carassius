@@ -3,6 +3,7 @@ package main
 import "core:flags"
 import "core:fmt"
 import "core:os"
+import "core:slice"
 import "core:strconv"
 import "core:strings"
 import "core:time"
@@ -491,8 +492,9 @@ grind_items :: proc(items: ^[dynamic]Item) -> bool {
 }
 
 Options :: struct {
-  target: string `args:"pos=0" usage:"Specific target name"`,
-  rerun:  bool `args:"name=B" usage:"Rerun no matter what"`,
+  vars:    [dynamic]string `args:"name=D,manifold" usage:"User defined vars"`,
+  targets: [dynamic]string `args:"name=T,manifold" usage:"Specific target names"`,
+  rerun:   bool `args:"name=B" usage:"Rerun no matter what"`,
 }
 
 main :: proc() {
@@ -500,7 +502,7 @@ main :: proc() {
     debug_stuff()
   }
   opts: Options
-  flags.parse_or_exit(&opts, os.args)
+  flags.parse_or_exit(&opts, os.args, .Unix)
   items, err := parse_file("test.caras")
   switch v in err {
   case bool: if !v {
@@ -515,11 +517,20 @@ main :: proc() {
     return
   }
   env := make(Env)
+  for var in opts.vars {
+    parts, err := strings.split_n(var, "=", 2)
+    if err != .None {
+      fmt.eprintln("Allocation error")
+      return
+    }
+    if len(parts) == 2 do env[parts[0]] = parts[1]
+    if len(parts) == 1 do env[parts[0]] = "true"
+  }
   for index := 0; index < len(items); index += 1 {
     item := items[index]
     switch v in item {
     case Target:
-      if opts.target != "" && v.name != opts.target do continue
+      if len(opts.targets) != 0 && !slice.contains(opts.targets[:], v.name) do continue
       success, run := run_target(v, env, opts.rerun)
       if success {
         if run do fmt.printfln("Target %v run successfully", v.name)

@@ -9,6 +9,9 @@ if ( $TEST )
 whisper("unreachable")
 endif
 set(OFLAGS | "-out:gg -debug" )
+target(dummy|) {
+  echo "AAA"
+}
 target(gg| main.odin debug.odin ) {
   odin build . $OFLAGS
 }
