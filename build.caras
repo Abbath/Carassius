@@ -15,6 +15,6 @@ target(dummy|) {
 target(gg| main.odin debug.odin ) {
   odin build . $OFLAGS
 }
-loop(ELEM|1 2 3)
+loop(ELEM|1 "2\n" "3\\")
 whisper($ELEM)
 endloop

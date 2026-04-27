@@ -179,11 +179,18 @@ parse_name :: proc(parser: ^Parser) -> (res: string, ok: bool) {
     cs := current_symbol(parser^)
     escaped := false
     for cs != '"' || (cs == '"' && escaped) {
-      escaped = false
-      if !escaped && cs == '\\' {
-        escaped = true
-      } else {
+      if !escaped && cs == '\\' do escaped = true
+      else {
+        if escaped && slice.contains([]u8{'n', 'r', 't', 'b'}, cs) {
+          switch cs {
+          case 'n': cs = '\n'
+          case 'r': cs = '\r'
+          case 't': cs = '\t'
+          case 'b': cs = '\b'
+          }
+        }
         strings.write_byte(&sb, cs)
+        escaped = false
       }
       advance(parser, 1) or_return
       cs = current_symbol(parser^)
@@ -230,9 +237,7 @@ expand_vars :: proc(input: string, env: Env) -> (res: string) {
           }
         }
       }
-    } else {
-      strings.write_rune(&sb, c)
-    }
+    } else do strings.write_rune(&sb, c)
   }
   return strings.to_string(sb)
 }
@@ -301,12 +306,8 @@ parse_term :: proc(parser: ^Parser) -> (res: Operand, ok: bool) {
   skip_whitespace(parser)
   thing := parse_name(parser) or_return
   val, ok_int := strconv.parse_int(thing)
-  if ok_int {
-    return val, true
-  }
-  if thing == "true" || thing == "false" {
-    return strconv.parse_bool(thing)
-  }
+  if ok_int do return val, true
+  if thing == "true" || thing == "false" do return strconv.parse_bool(thing)
   return thing, true
 }
 
@@ -538,9 +539,7 @@ grind_items :: proc(items: ^[dynamic]Item) -> bool {
 }
 
 print_items :: proc(items: [dynamic]Item) {
-  for item, idx in items {
-    fmt.println(idx, item)
-  }
+  for item, idx in items do fmt.println(idx, item)
 }
 
 Options :: struct {
@@ -592,19 +591,14 @@ main :: proc() {
       if success {
         if run && opts.debug do fmt.printfln("Target %v run successfully", v.name)
         else do fmt.println("Nothing to do")
-      } else {
-        fmt.printfln("Target %v failed", v.name)
-      }
+      } else do fmt.printfln("Target %v failed", v.name)
     case Set:
       value := expand_vars(v.value, env)
       env[expand_vars(v.name, env)] = value
     case Unset:
       name := expand_vars(v.name, env)
-      if name in env {
-        delete_key(&env, name)
-      } else {
-        fmt.eprintln("Key was not there in the first place")
-      }
+      if name in env do delete_key(&env, name)
+      else do fmt.eprintln("Key was not there in the first place")
     case If:
       if v.jump_end == SENTINEL {
         fmt.eprintln("Unbounded if")
