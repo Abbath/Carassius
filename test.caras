@@ -1,8 +1,7 @@
-if( 1 == 1 && 2 /= 2 )
-set(OFLAGS | "-out:gg -debug" )
-target(gg| main.odin debug.odin ) {
-  odin build . $OFLAGS
-}
+if( 0 )
+whisper("true")
+else
+whisper("false")
 endif
 set(OFLAGS | "-out:gg -debug" )
 target(gg| main.odin debug.odin ) {

@@ -61,16 +61,29 @@ Cond :: struct {
 }
 
 If :: struct {
-  cond: Operand,
+  cond:      Operand,
+  jump_else: int,
+  jump_end:  int,
+}
+
+Else :: struct {
+  exec: bool,
+  jump: int,
 }
 
 EndIf :: struct {}
+
+Fart :: struct {
+  whisper: string,
+}
 
 Item :: union {
   Target,
   Set,
   If,
+  Else,
   EndIf,
+  Fart,
 }
 Items :: [dynamic]Item
 
@@ -321,6 +334,14 @@ parse_if :: proc(parser: ^Parser) -> (res: If, ok: bool) {
   return {cond = cond}, true
 }
 
+parse_fart :: proc(parser: ^Parser) -> (res: Fart, ok: bool) {
+  expect(parser, "whisper") or_return
+  expect(parser, "(") or_return
+  whisper := parse_name(parser) or_return
+  expect(parser, ")") or_return
+  return {whisper = whisper}, true
+}
+
 parse_file :: proc(filename: string) -> (res: Items, err: Error) {
   data := os.read_entire_file(filename, context.allocator) or_return
   text := string(data)
@@ -342,10 +363,20 @@ parse_file :: proc(filename: string) -> (res: Items, err: Error) {
       skip_newline(&parser)
       append(&items, iff)
     }
+    if starts_with(parser, "else") {
+      expect(&parser, "else") or_return
+      skip_newline(&parser)
+      append(&items, Else{})
+    }
     if starts_with(parser, "endif") {
-      expect(&parser, "endif")
+      expect(&parser, "endif") or_return
       skip_newline(&parser)
       append(&items, EndIf{})
+    }
+    if starts_with(parser, "whisper") {
+      fart := parse_fart(&parser) or_return
+      skip_newline(&parser)
+      append(&items, fart)
     }
   }
   return items, nil
@@ -405,6 +436,37 @@ run_target :: proc(target: Target, env: map[string]string, rerun: bool = false) 
   return success, run
 }
 
+grind_items :: proc(items: ^[dynamic]Item) -> bool {
+  last_if_idx := -1
+  last_else_idx := -1
+  for &item, idx in items {
+    #partial switch v in item {
+    case If: last_if_idx = idx
+    case Else:
+      if last_if_idx != -1 {
+        x, ok := &items[last_if_idx].(If)
+        if !ok do return false
+        x.jump_else = idx
+      }
+      last_else_idx = idx
+    case EndIf:
+      if last_if_idx != -1 {
+        x, ok := &items[last_if_idx].(If)
+        if !ok do return false
+        x.jump_end = idx
+        last_if_idx = -1
+      }
+      if last_else_idx != -1 {
+        x, ok := &items[last_else_idx].(Else)
+        if !ok do return false
+        x.jump = idx
+        last_else_idx = -1
+      }
+    }
+  }
+  return true
+}
+
 Options :: struct {
   target: string `args:"pos=0" usage:"Specific target name"`,
   rerun:  bool `args:"name=B" usage:"Rerun no matter what"`,
@@ -424,13 +486,17 @@ main :: proc() {
       }
   case os.Error: if v != nil do fmt.println(v)
   }
+  ifs_ok := grind_items(&items)
+  if !ifs_ok {
+    fmt.eprintln("Ifs and elses are borked")
+    return
+  }
   env := make(map[string]string)
-  executors := make([dynamic]bool)
-  for item in items {
-    execute := executors[len(executors) - 1]
+  for index := 0; index < len(items); index += 1 {
+    item := items[index]
     switch v in item {
     case Target:
-      if opts.target != "" && v.name != opts.target || !execute do continue
+      if opts.target != "" && v.name != opts.target do continue
       success, run := run_target(v, env, opts.rerun)
       if success {
         if run do fmt.printfln("Target %v run successfully", v.name)
@@ -439,17 +505,31 @@ main :: proc() {
         fmt.printfln("Target %v failed", v.name)
       }
     case Set:
-      if !execute do continue
       value := expand_vars(v.value, env)
       env[v.name] = value
     case If:
-      if !execute {
-        append(&executors, false)
-        continue
+      if v.jump_end == 0 {
+        fmt.eprintln("Unbounded if")
+        break
       }
       val := op_to_bool(v.cond)
-      append(&executors, val)
-    case EndIf: pop(&executors)
+      if v.jump_else != 0 {
+        x, ok := &items[v.jump_else].(Else)
+        if !ok {
+          fmt.eprintln("This is not else")
+          break
+        }
+        x.exec = !val
+      }
+      if !val do index = v.jump_else != 0 ? v.jump_else : v.jump_end
+    case Else:
+      if v.jump == 0 {
+        fmt.eprintln("Unbounded else")
+        break
+      }
+      if !v.exec do index = v.jump
+    case EndIf: {}
+    case Fart: fmt.println(v.whisper)
     }
   }
 }
