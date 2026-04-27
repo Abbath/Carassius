@@ -212,9 +212,18 @@ expand_vars :: proc(input: string, env: Env) -> (res: string) {
   sb := strings.builder_make()
   lil_sb := strings.builder_make()
   gathering := false
+  skip := false
   for c, idx in input {
+    if skip {
+      skip = false
+      continue
+    }
     if c == '$' {
-      if idx < len(input) - 1 && input[idx + 1] == '$' do continue
+      if idx < len(input) - 1 && input[idx + 1] == '$' {
+        strings.write_string(&sb, "$$")
+        skip = true
+        continue
+      }
       strings.builder_reset(&lil_sb)
       gathering = true
       continue

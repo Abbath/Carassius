@@ -17,4 +17,7 @@ target(gg| main.odin debug.odin ) {
 }
 loop(ELEM|1 "2\n" "3\\")
 whisper($ELEM)
+whisper(EL$$EM)
+whisper($$ELEM)
+whisper(ELEM$$)
 endloop
