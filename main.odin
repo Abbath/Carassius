@@ -8,6 +8,8 @@ import "core:strings"
 import "core:time"
 import "core:unicode"
 
+Env :: distinct map[string]string
+
 Error :: union {
   os.Error,
   bool,
@@ -34,6 +36,10 @@ Target :: struct {
 Set :: struct {
   name:  string,
   value: string,
+}
+
+Unset :: struct {
+  name: string,
 }
 
 Op :: enum {
@@ -80,6 +86,7 @@ Fart :: struct {
 Item :: union {
   Target,
   Set,
+  Unset,
   If,
   Else,
   EndIf,
@@ -92,12 +99,12 @@ Parser :: struct {
   cursor: int,
 }
 
-compute_cond :: proc(cond: Cond) -> Operand {
+compute_cond :: proc(cond: Cond, env: Env) -> Operand {
   switch cond.operator {
-  case .AND: return op_to_bool(cond.operand1^) && op_to_bool(cond.operand2^)
-  case .OR: return op_to_bool(cond.operand1^) || op_to_bool(cond.operand2^)
-  case .EQ: return compute_op(cond.operand1^) == compute_op(cond.operand2^)
-  case .NE: return compute_op(cond.operand1^) != compute_op(cond.operand2^)
+  case .AND: return op_to_bool(cond.operand1^, env) && op_to_bool(cond.operand2^, env)
+  case .OR: return op_to_bool(cond.operand1^, env) || op_to_bool(cond.operand2^, env)
+  case .EQ: return compute_op(cond.operand1^, env) == compute_op(cond.operand2^, env)
+  case .NE: return compute_op(cond.operand1^, env) != compute_op(cond.operand2^, env)
   case .LT: return false
   case .GT: return false
   case .LE: return false
@@ -106,18 +113,21 @@ compute_cond :: proc(cond: Cond) -> Operand {
   return true
 }
 
-compute_op :: proc(op: Operand) -> Operand {
+compute_op :: proc(op: Operand, env: Env) -> Operand {
   switch v in op {
-  case Cond: return compute_cond(v)
-  case int, bool, string: return v
+  case Cond: return compute_cond(v, env)
+  case string: return expand_vars(v, env)
+  case int, bool: return v
   }
   return nil
 }
 
-op_to_bool :: proc(op: Operand) -> bool {
+op_to_bool :: proc(op: Operand, env: Env) -> bool {
   switch v in op {
-  case Cond: return op_to_bool(compute_cond(v))
-  case string: return v == "true" || v == "1"
+  case Cond: return op_to_bool(compute_cond(v, env), env)
+  case string:
+    x := expand_vars(v, env)
+    return x == "true" || x == "1"
   case int: return v != 0
   case bool: return v
   }
@@ -174,7 +184,7 @@ parse_name :: proc(parser: ^Parser) -> (res: string, ok: bool) {
   return strings.to_string(sb), true
 }
 
-expand_vars :: proc(input: string, env: map[string]string) -> (res: string) {
+expand_vars :: proc(input: string, env: Env) -> (res: string) {
   if !strings.contains(input, "$") do return input
   sb := strings.builder_make()
   lil_sb := strings.builder_make()
@@ -259,8 +269,16 @@ parse_set :: proc(parser: ^Parser) -> (res: Set, ok: bool) {
   expect(parser, "|") or_return
   skip_whitespace(parser)
   value := parse_name(parser) or_return
-  expect(parser, ")")
+  expect(parser, ")") or_return
   return {name = name, value = value}, true
+}
+
+parse_unset :: proc(parser: ^Parser) -> (res: Unset, ok: bool) {
+  expect(parser, "unset") or_return
+  expect(parser, "(") or_return
+  name := parse_name(parser) or_return
+  expect(parser, ")") or_return
+  return {name = name}, true
 }
 
 parse_term :: proc(parser: ^Parser) -> (res: Operand, ok: bool) {
@@ -353,6 +371,11 @@ parse_file :: proc(filename: string) -> (res: Items, err: Error) {
       skip_newline(&parser)
       append(&items, set)
     }
+    if starts_with(parser, "unset") {
+      unset := parse_unset(&parser) or_return
+      skip_newline(&parser)
+      append(&items, unset)
+    }
     if starts_with(parser, "target") {
       target := parse_target(&parser) or_return
       skip_newline(&parser)
@@ -382,7 +405,7 @@ parse_file :: proc(filename: string) -> (res: Items, err: Error) {
   return items, nil
 }
 
-run_target :: proc(target: Target, env: map[string]string, rerun: bool = false) -> (success: bool, run: bool) {
+run_target :: proc(target: Target, env: Env, rerun: bool = false) -> (success: bool, run: bool) {
   name := target.name
   outdated := true
   for dep in target.deps do if !os.exists(dep) {
@@ -481,17 +504,17 @@ main :: proc() {
   items, err := parse_file("test.caras")
   switch v in err {
   case bool: if !v {
-        fmt.println("Fail")
+        fmt.eprintln("Fail")
         return
       }
-  case os.Error: if v != nil do fmt.println(v)
+  case os.Error: if v != nil do fmt.eprintln(v)
   }
   ifs_ok := grind_items(&items)
   if !ifs_ok {
     fmt.eprintln("Ifs and elses are borked")
     return
   }
-  env := make(map[string]string)
+  env := make(Env)
   for index := 0; index < len(items); index += 1 {
     item := items[index]
     switch v in item {
@@ -506,13 +529,20 @@ main :: proc() {
       }
     case Set:
       value := expand_vars(v.value, env)
-      env[v.name] = value
+      env[expand_vars(v.name, env)] = value
+    case Unset:
+      name := expand_vars(v.name, env)
+      if name in env {
+        delete_key(&env, name)
+      } else {
+        fmt.eprintln("Key was not there in the first place")
+      }
     case If:
       if v.jump_end == 0 {
         fmt.eprintln("Unbounded if")
         break
       }
-      val := op_to_bool(v.cond)
+      val := op_to_bool(v.cond, env)
       if v.jump_else != 0 {
         x, ok := &items[v.jump_else].(Else)
         if !ok {
@@ -529,7 +559,7 @@ main :: proc() {
       }
       if !v.exec do index = v.jump
     case EndIf: {}
-    case Fart: fmt.println(v.whisper)
+    case Fart: fmt.println(expand_vars(v.whisper, env))
     }
   }
 }

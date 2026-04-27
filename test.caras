@@ -1,7 +1,12 @@
-if( 0 )
+set(TEST|1)
+if( $TEST )
 whisper("true")
 else
 whisper("false")
+endif
+unset(TEST)
+if ( $TEST )
+whisper("unreachable")
 endif
 set(OFLAGS | "-out:gg -debug" )
 target(gg| main.odin debug.odin ) {
