@@ -18,7 +18,7 @@ entrypoint {
     whisper(ELEM$$)
   endloop
 }
-target(dummy) {
+target(dummy|ff) {
   echo "AAA"
 }
 target(gg| main.odin debug.odin ) {

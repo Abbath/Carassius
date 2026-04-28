@@ -511,12 +511,13 @@ parse_file :: proc(filename: string) -> (res1: Items, res2: Targets, err: Error)
   return items, targets, nil
 }
 
-run_target :: proc(name: string, targets: Targets, env: Env, rerun: bool = false) -> (success: bool, run: bool) {
+run_target :: proc(name: string, targets: Targets, env: Env, already_run: ^[dynamic]string, rerun: bool = false) -> (success: bool, run: bool) {
+  append(already_run, name)
   outdated := true
   target := targets[name]
   for dep in target.deps {
-    if dep in targets {
-      s, r := run_target(dep, targets, env, rerun)
+    if dep in targets && !slice.contains(already_run[:], dep) {
+      s, r := run_target(dep, targets, env, already_run, rerun)
       if r && !s {
         fmt.eprintln("Subtarget failed")
         return false, false
@@ -664,7 +665,8 @@ main :: proc() {
         return
       }
       target := targets[v.name]
-      success, run := run_target(v.name, targets, env, opts.rerun)
+      already_run := make([dynamic]string)
+      success, run := run_target(v.name, targets, env, &already_run, opts.rerun)
       if success {
         if run && opts.debug do fmt.printfln("Target %v run successfully", v.name)
         else do if len(target.deps) != 0 do fmt.println("Nothing to do")
