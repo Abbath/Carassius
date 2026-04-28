@@ -152,18 +152,18 @@ compare_ops :: proc(op: Op, op1: Operand, op2: Operand, env: Env) -> bool {
   case bool:
     v2 := op2.(bool) or_return
     #partial switch op {
-    case .LT: return !v1 && v2
-    case .GT: return v1 && !v2
-    case .LE: return !v1 && v2 || v1 == v2
-    case .GE: return v1 && !v2 || v1 == v2
+    case .LT: return int(v1) < int(v2)
+    case .GT: return int(v1) > int(v2)
+    case .LE: return int(v1) <= int(v2)
+    case .GE: return int(v1) >= int(v2)
     }
   case string:
     v2 := op2.(string) or_return
     #partial switch op {
-    case .LT: return slice.cmp(v1, v2) == .Less
-    case .GT: return slice.cmp(v1, v2) == .Greater
-    case .LE: return slice.cmp(v1, v2) != .Greater
-    case .GE: return slice.cmp(v1, v2) != .Less
+    case .LT: return v1 < v2
+    case .GT: return v1 > v2
+    case .LE: return v1 <= v2
+    case .GE: return v1 >= v2
     }
   }
   return false
@@ -175,7 +175,7 @@ compute_cond :: proc(cond: Cond, env: Env) -> Operand {
   case .OR: return op_to_bool(cond.operand1^, env) || op_to_bool(cond.operand2^, env)
   case .EQ: return compute_op(cond.operand1^, env) == compute_op(cond.operand2^, env)
   case .NE: return compute_op(cond.operand1^, env) != compute_op(cond.operand2^, env)
-  case .LT, .GT, .LE, .GE: return compare_ops(cond.operator, cond.operand1^, cond.operand2^, env)
+  case .LT, .GT, .LE, .GE: return compare_ops(cond.operator, compute_op(cond.operand1^, env), compute_op(cond.operand2^, env), env)
   }
   return true
 }
