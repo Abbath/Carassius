@@ -1,23 +1,26 @@
-set(TEST|1)
-if( $TEST )
-whisper("true")
-else
-whisper("false")
-endif
-unset(TEST)
-if ( $TEST )
-whisper("unreachable")
-endif
-set(OFLAGS | "-out:gg -debug" )
+entrypoint {
+  build(dummy)
+  set(TEST|1)
+  if( $TEST )
+  whisper("true")
+  else
+  whisper("false")
+  endif
+  unset(TEST)
+  if ( $TEST )
+  whisper("unreachable")
+  endif
+  set(OFLAGS | "-out:gg -debug" )
+  loop(ELEM|1 "2\n" "3\\")
+  whisper($ELEM)
+  whisper(EL$$EM)
+  whisper($$ELEM)
+  whisper(ELEM$$)
+  endloop
+}
 target(dummy|) {
   echo "AAA"
 }
 target(gg| main.odin debug.odin ) {
   odin build . $OFLAGS
 }
-loop(ELEM|1 "2\n" "3\\")
-whisper($ELEM)
-whisper(EL$$EM)
-whisper($$ELEM)
-whisper(ELEM$$)
-endloop

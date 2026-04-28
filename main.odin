@@ -35,6 +35,7 @@ Target :: struct {
   deps:  [dynamic]string,
   execs: [dynamic][dynamic]string,
 }
+Targets :: distinct map[string]Target
 
 Set :: struct {
   name:  string,
@@ -97,8 +98,12 @@ EndLoop :: struct {
   jump: int,
 }
 
+Build :: struct {
+  name: string,
+}
+
 Item :: union {
-  Target,
+  Build,
   Set,
   Unset,
   If,
@@ -108,7 +113,7 @@ Item :: union {
   Loop,
   EndLoop,
 }
-Items :: [dynamic]Item
+Items :: distinct [dynamic]Item
 
 Parser :: struct {
   text:   string,
@@ -292,6 +297,14 @@ parse_target :: proc(parser: ^Parser) -> (res: Target, ok: bool) {
   return {name = name, deps = deps, execs = execs}, true
 }
 
+parse_build :: proc(parser: ^Parser) -> (res: Build, ok: bool) {
+  expect(parser, "build") or_return
+  expect(parser, "(") or_return
+  name := parse_name(parser) or_return
+  expect(parser, ")") or_return
+  return {name = name}, true
+}
+
 parse_set :: proc(parser: ^Parser) -> (res: Set, ok: bool) {
   expect(parser, "set") or_return
   expect(parser, "(") or_return
@@ -402,59 +415,97 @@ parse_loop :: proc(parser: ^Parser) -> (res: Loop, ok: bool) {
   return {name = name, elements = elems, jump = SENTINEL}, true
 }
 
-parse_file :: proc(filename: string) -> (res: Items, err: Error) {
+parse_file :: proc(filename: string) -> (res1: Items, res2: Targets, err: Error) {
   data := os.read_entire_file(filename, context.allocator) or_return
   text := string(data)
   parser := Parser{text, 0}
-  items := make([dynamic]Item)
+  items := make(Items)
+  targets := make(Targets)
+  entrypoint_found := false
   for parser.cursor < len(text) {
-    if starts_with(parser, "set") {
-      set := parse_set(&parser) or_return
-      skip_newline(&parser)
-      append(&items, set)
-    }
-    if starts_with(parser, "unset") {
-      unset := parse_unset(&parser) or_return
-      skip_newline(&parser)
-      append(&items, unset)
-    }
-    if starts_with(parser, "target") {
-      target := parse_target(&parser) or_return
-      skip_newline(&parser)
-      append(&items, target)
-    }
-    if starts_with(parser, "if") {
-      iff := parse_if(&parser) or_return
-      skip_newline(&parser)
-      append(&items, iff)
-    }
-    if token := "else"; starts_with(parser, token) {
-      expect(&parser, token) or_return
-      skip_newline(&parser)
-      append(&items, Else{jump = SENTINEL})
-    }
-    if token := "endif"; starts_with(parser, token) {
-      expect(&parser, token) or_return
-      skip_newline(&parser)
-      append(&items, EndIf{})
-    }
-    if starts_with(parser, "whisper") {
-      fart := parse_fart(&parser) or_return
-      skip_newline(&parser)
-      append(&items, fart)
-    }
-    if starts_with(parser, "loop") {
-      loop := parse_loop(&parser) or_return
-      skip_newline(&parser)
-      append(&items, loop)
-    }
-    if token := "endloop"; starts_with(parser, token) {
-      expect(&parser, token) or_return
-      skip_newline(&parser)
-      append(&items, EndLoop{jump = SENTINEL})
+    skip_whitespace(&parser)
+    if !entrypoint_found {
+      if starts_with(parser, "target") {
+        target := parse_target(&parser) or_return
+        skip_newline(&parser)
+        targets[target.name] = target
+        continue
+      }
+      if token := "entrypoint"; starts_with(parser, token) {
+        expect(&parser, token) or_return
+        expect(&parser, "{") or_return
+        skip_newline(&parser)
+        entrypoint_found = true
+        continue
+      }
+      fmt.eprintfln("Illegal instruction on toplevel %v", parser.text[parser.cursor:])
+      break
+    } else {
+      if starts_with(parser, "build") {
+        build := parse_build(&parser) or_return
+        skip_newline(&parser)
+        append(&items, build)
+        continue
+      }
+      if starts_with(parser, "set") {
+        set := parse_set(&parser) or_return
+        skip_newline(&parser)
+        append(&items, set)
+        continue
+      }
+      if starts_with(parser, "unset") {
+        unset := parse_unset(&parser) or_return
+        skip_newline(&parser)
+        append(&items, unset)
+        continue
+      }
+      if starts_with(parser, "if") {
+        iff := parse_if(&parser) or_return
+        skip_newline(&parser)
+        append(&items, iff)
+        continue
+      }
+      if token := "else"; starts_with(parser, token) {
+        expect(&parser, token) or_return
+        skip_newline(&parser)
+        append(&items, Else{jump = SENTINEL})
+        continue
+      }
+      if token := "endif"; starts_with(parser, token) {
+        expect(&parser, token) or_return
+        skip_newline(&parser)
+        append(&items, EndIf{})
+        continue
+      }
+      if starts_with(parser, "whisper") {
+        fart := parse_fart(&parser) or_return
+        skip_newline(&parser)
+        append(&items, fart)
+        continue
+      }
+      if starts_with(parser, "loop") {
+        loop := parse_loop(&parser) or_return
+        skip_newline(&parser)
+        append(&items, loop)
+        continue
+      }
+      if token := "endloop"; starts_with(parser, token) {
+        expect(&parser, token) or_return
+        skip_newline(&parser)
+        append(&items, EndLoop{jump = SENTINEL})
+        continue
+      }
+      if token := "}"; starts_with(parser, "}") {
+        expect(&parser, token) or_return
+        skip_newline(&parser)
+        entrypoint_found = false
+        continue
+      }
+      fmt.eprintln("Illegal instruction in entrypoint")
+      break
     }
   }
-  return items, nil
+  return items, targets, nil
 }
 
 run_target :: proc(target: Target, env: Env, rerun: bool = false) -> (success: bool, run: bool) {
@@ -511,7 +562,7 @@ run_target :: proc(target: Target, env: Env, rerun: bool = false) -> (success: b
   return success, run
 }
 
-grind_items :: proc(items: ^[dynamic]Item) -> bool {
+grind_items :: proc(items: ^Items) -> bool {
   last_if_idx := SENTINEL
   last_else_idx := SENTINEL
   last_loop_idx := SENTINEL
@@ -547,7 +598,7 @@ grind_items :: proc(items: ^[dynamic]Item) -> bool {
   return true
 }
 
-print_items :: proc(items: [dynamic]Item) {
+print_items :: proc(items: Items) {
   for item, idx in items do fmt.println(idx, item)
 }
 
@@ -567,7 +618,7 @@ main :: proc() {
     input = "build.caras",
   }
   flags.parse_or_exit(&opts, os.args, .Unix)
-  items, err := parse_file(opts.input)
+  items, targets, err := parse_file(opts.input)
   switch v in err {
   case bool: if !v {
         fmt.eprintln("Fail")
@@ -594,12 +645,16 @@ main :: proc() {
   for index := 0; index < len(items); index += 1 {
     item := &items[index]
     switch &v in item {
-    case Target:
-      if len(opts.targets) != 0 && !slice.contains(opts.targets[:], v.name) do continue
-      success, run := run_target(v, env, opts.rerun)
+    case Build:
+      if v.name not_in targets {
+        fmt.eprintfln("Target %v does not exist", v.name)
+        return
+      }
+      target := targets[v.name]
+      success, run := run_target(target, env, opts.rerun)
       if success {
         if run && opts.debug do fmt.printfln("Target %v run successfully", v.name)
-        else do fmt.println("Nothing to do")
+        else do if len(target.deps) != 0 do fmt.println("Nothing to do")
       } else do fmt.printfln("Target %v failed", v.name)
     case Set:
       value := expand_vars(v.value, env)
