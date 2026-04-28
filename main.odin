@@ -1,3 +1,4 @@
+#+feature using-stmt
 package main
 
 import "core:flags"
@@ -125,16 +126,56 @@ Parser :: struct {
   cursor: int,
 }
 
+compare_ops :: proc(op: Op, op1: Operand, op2: Operand, env: Env) -> bool {
+  using slice.Ordering
+  if type_of(op1) == Cond && type_of(op2) != Cond {
+    v := op1.(Cond) or_return
+    return compare_ops(op, compute_cond(v, env), op2, env)
+  }
+  if type_of(op1) != Cond && type_of(op2) == Cond {
+    v := op2.(Cond) or_return
+    return compare_ops(op, op1, compute_cond(v, env), env)
+  }
+  if type_of(op1) != type_of(op2) do return false
+  switch v1 in op1 {
+  case Cond:
+    v2 := op2.(Cond)
+    return compare_ops(op, compute_cond(v1, env), compute_cond(v2, env), env)
+  case int:
+    v2 := op2.(int) or_return
+    #partial switch op {
+    case .LT: return v1 < v2
+    case .GT: return v1 > v2
+    case .LE: return v1 <= v2
+    case .GE: return v1 >= v2
+    }
+  case bool:
+    v2 := op2.(bool) or_return
+    #partial switch op {
+    case .LT: return !v1 && v2
+    case .GT: return v1 && !v2
+    case .LE: return !v1 && v2 || v1 == v2
+    case .GE: return v1 && !v2 || v1 == v2
+    }
+  case string:
+    v2 := op2.(string) or_return
+    #partial switch op {
+    case .LT: return slice.cmp(v1, v2) == .Less
+    case .GT: return slice.cmp(v1, v2) == .Greater
+    case .LE: return slice.cmp(v1, v2) != .Greater
+    case .GE: return slice.cmp(v1, v2) != .Less
+    }
+  }
+  return false
+}
+
 compute_cond :: proc(cond: Cond, env: Env) -> Operand {
   switch cond.operator {
   case .AND: return op_to_bool(cond.operand1^, env) && op_to_bool(cond.operand2^, env)
   case .OR: return op_to_bool(cond.operand1^, env) || op_to_bool(cond.operand2^, env)
   case .EQ: return compute_op(cond.operand1^, env) == compute_op(cond.operand2^, env)
   case .NE: return compute_op(cond.operand1^, env) != compute_op(cond.operand2^, env)
-  case .LT: return false
-  case .GT: return false
-  case .LE: return false
-  case .GE: return false
+  case .LT, .GT, .LE, .GE: return compare_ops(cond.operator, cond.operand1^, cond.operand2^, env)
   }
   return true
 }
@@ -524,7 +565,7 @@ parse_file :: proc(filename: string) -> (res1: Items, res2: Targets, err: Error)
         entrypoint_found = false
         continue
       }
-      fmt.eprintln("Illegal instruction in entrypoint")
+      fmt.eprintfln("Illegal instruction in entrypoint %v", parser.text[parser.cursor:])
       break
     }
   }
@@ -642,6 +683,11 @@ Options :: struct {
   targets: [dynamic]string `args:"name=T,manifold" usage:"Specific target names"`,
   rerun:   bool `args:"name=B" usage:"Rerun no matter what"`,
   debug:   bool `usage:"Debug prints"`,
+}
+
+A :: union {
+  string,
+  int,
 }
 
 main :: proc() {
