@@ -11,7 +11,12 @@ import "core:unicode"
 
 SENTINEL :: -1
 
-Env :: distinct map[string]string
+Entry :: union {
+  string,
+  [dynamic]string,
+}
+
+Env :: distinct map[string]Entry
 
 Error :: union {
   os.Error,
@@ -38,8 +43,8 @@ Target :: struct {
 Targets :: distinct map[string]Target
 
 Set :: struct {
-  name:  string,
-  value: string,
+  name:   string,
+  values: [dynamic]string,
 }
 
 Unset :: struct {
@@ -241,7 +246,14 @@ expand_vars :: proc(input: string, env: Env) -> (res: string) {
         strings.write_rune(&lil_sb, c)
         partial := strings.to_string(lil_sb)
         if partial in env {
-          strings.write_string(&sb, env[partial])
+          entry := env[partial]
+          switch v in entry {
+          case string: strings.write_string(&sb, v)
+          case [dynamic]string: for s, i in v {
+                if i != 0 do strings.write_byte(&sb, ' ')
+                strings.write_string(&sb, s)
+              }
+          }
           gathering = false
         } else {
           val, found := os.lookup_env(partial, context.allocator)
@@ -312,11 +324,19 @@ parse_set :: proc(parser: ^Parser) -> (res: Set, ok: bool) {
   expect(parser, "set") or_return
   expect(parser, "(") or_return
   name := parse_name(parser) or_return
-  expect(parser, "|") or_return
   skip_whitespace(parser)
-  value := parse_name(parser) or_return
+  values := make([dynamic]string)
+  if starts_with(parser^, "|") {
+    expect(parser, "|") or_return
+    skip_whitespace(parser)
+    for current_symbol(parser^) != ')' {
+      value := parse_name(parser) or_return
+      append(&values, value)
+      skip_whitespace(parser)
+    }
+  }
   expect(parser, ")") or_return
-  return {name = name, value = value}, true
+  return {name = name, values = values}, true
 }
 
 parse_unset :: proc(parser: ^Parser) -> (res: Unset, ok: bool) {
@@ -672,8 +692,12 @@ main :: proc() {
         else do if len(target.deps) != 0 do fmt.println("Nothing to do")
       } else do fmt.printfln("Target %v failed", v.name)
     case Set:
-      value := expand_vars(v.value, env)
-      env[expand_vars(v.name, env)] = value
+      for &value in v.values do value = expand_vars(value, env)
+      switch len(v.values) {
+      case 0: env[expand_vars(v.name, env)] = "true"
+      case 1: env[expand_vars(v.name, env)] = v.values[0]
+      case: env[expand_vars(v.name, env)] = v.values
+      }
     case Unset:
       name := expand_vars(v.name, env)
       if name in env do delete_key(&env, name)
