@@ -1,26 +1,29 @@
 entrypoint {
-  build(dummy)
+  build(ff)
   set(TEST|1)
   if( $TEST )
-  whisper("true")
+    whisper("true")
   else
-  whisper("false")
+    whisper("false")
   endif
   unset(TEST)
   if ( $TEST )
-  whisper("unreachable")
+    whisper("unreachable")
   endif
   set(OFLAGS | "-out:gg -debug" )
   loop(ELEM|1 "2\n" "3\\")
-  whisper($ELEM)
-  whisper(EL$$EM)
-  whisper($$ELEM)
-  whisper(ELEM$$)
+    whisper($ELEM)
+    whisper(EL$$EM)
+    whisper($$ELEM)
+    whisper(ELEM$$)
   endloop
 }
-target(dummy|) {
+target(dummy) {
   echo "AAA"
 }
 target(gg| main.odin debug.odin ) {
   odin build . $OFLAGS
+}
+target(ff|dummy) {
+  echo "ASS"
 }
