@@ -258,6 +258,29 @@ parse_name :: proc(parser: ^Parser) -> (res: string, ok: bool) {
   return strings.to_string(sb), true
 }
 
+roll_string :: proc(loong_boi: string, sb: ^strings.Builder, env: Env) {
+  for l := len(loong_boi); l >= 1; l -= 1 {
+    partial := loong_boi[:l]
+    if partial in env {
+      entry := env[partial]
+      switch v in entry {
+      case string: strings.write_string(sb, v)
+      case [dynamic]string: for s, i in v {
+            if i != 0 do strings.write_byte(sb, ' ')
+            strings.write_string(sb, s)
+          }
+      }
+      break
+    } else {
+      val, found := os.lookup_env(partial, context.allocator)
+      if found {
+        strings.write_string(sb, val)
+        break
+      }
+    }
+  }
+}
+
 expand_vars :: proc(input: string, env: Env) -> (res: string) {
   if !strings.contains(input, "$") do return input
   sb := strings.builder_make()
@@ -280,31 +303,43 @@ expand_vars :: proc(input: string, env: Env) -> (res: string) {
       continue
     }
     if gathering {
-      if !unicode.is_alpha(c) && !unicode.is_digit(c) && c != '_' {
-        gathering = false
-        strings.write_rune(&sb, c)
-      } else {
-        strings.write_rune(&lil_sb, c)
-        partial := strings.to_string(lil_sb)
-        if partial in env {
-          entry := env[partial]
-          switch v in entry {
-          case string: strings.write_string(&sb, v)
-          case [dynamic]string: for s, i in v {
-                if i != 0 do strings.write_byte(&sb, ' ')
-                strings.write_string(&sb, s)
-              }
-          }
+      if !munch {
+        if !unicode.is_alpha(c) && !unicode.is_digit(c) && c != '_' {
           gathering = false
+          strings.write_rune(&sb, c)
         } else {
-          val, found := os.lookup_env(partial, context.allocator)
-          if found {
-            strings.write_string(&sb, val)
+          strings.write_rune(&lil_sb, c)
+          partial := strings.to_string(lil_sb)
+          if partial in env {
+            entry := env[partial]
+            switch v in entry {
+            case string: strings.write_string(&sb, v)
+            case [dynamic]string: for s, i in v {
+                  if i != 0 do strings.write_byte(&sb, ' ')
+                  strings.write_string(&sb, s)
+                }
+            }
             gathering = false
+          } else {
+            val, found := os.lookup_env(partial, context.allocator)
+            if found {
+              strings.write_string(&sb, val)
+              gathering = false
+            }
           }
         }
+      } else {
+        if !unicode.is_alpha(c) && !unicode.is_digit(c) && c != '_' {
+          loong_boi := strings.to_string(lil_sb)
+          roll_string(loong_boi, &sb, env)
+          gathering = false
+          strings.write_rune(&sb, c)
+        } else do strings.write_rune(&lil_sb, c)
       }
     } else do strings.write_rune(&sb, c)
+  }
+  if loong_boi := strings.to_string(lil_sb); munch && len(loong_boi) != 0 {
+    roll_string(loong_boi, &sb, env)
   }
   return strings.to_string(sb)
 }
@@ -683,12 +718,15 @@ Options :: struct {
   targets: [dynamic]string `args:"name=T,manifold" usage:"Specific target names"`,
   rerun:   bool `args:"name=B" usage:"Rerun no matter what"`,
   debug:   bool `usage:"Debug prints"`,
+  munch:   bool `args:"name=M" usage:"Maximal Munch for vars"`,
 }
 
 A :: union {
   string,
   int,
 }
+
+munch: bool = false
 
 main :: proc() {
   when ODIN_DEBUG {
@@ -698,6 +736,7 @@ main :: proc() {
     input = "build.caras",
   }
   flags.parse_or_exit(&opts, os.args, .Unix)
+  munch = opts.munch
   items, targets, err := parse_file(opts.input)
   switch v in err {
   case bool: if !v {
