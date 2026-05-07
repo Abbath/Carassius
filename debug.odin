@@ -3,19 +3,20 @@ package main
 import "core:fmt"
 import "core:mem"
 
-debug_stuff :: proc() {
-  track: mem.Tracking_Allocator
-  mem.tracking_allocator_init(&track, context.allocator)
-  context.allocator = mem.tracking_allocator(&track)
+track: mem.Tracking_Allocator
 
-  defer {
-    if len(track.allocation_map) > 0 {
-      fmt.eprintf("=== %v allocations not freed: ===\n", len(track.allocation_map))
-      for _, entry in track.allocation_map {
-        fmt.eprintf("- %v bytes @ %v\n", entry.size, entry.location)
-      }
+debug_stuff_init :: proc() -> mem.Allocator {
+  mem.tracking_allocator_init(&track, context.allocator)
+  return mem.tracking_allocator(&track)
+}
+
+debug_stuff_defer :: proc() {
+  if len(track.allocation_map) > 0 {
+    fmt.eprintf("=== %v allocations not freed: ===\n", len(track.allocation_map))
+    for _, entry in track.allocation_map {
+      fmt.eprintf("- %v bytes @ %v\n", entry.size, entry.location)
     }
-    mem.tracking_allocator_destroy(&track)
   }
+  mem.tracking_allocator_destroy(&track)
 }
 

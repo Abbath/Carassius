@@ -730,7 +730,8 @@ munch: bool = false
 
 main :: proc() {
   when ODIN_DEBUG {
-    debug_stuff()
+    context.allocator = debug_stuff_init()
+    defer debug_stuff_defer()
   }
   opts := Options {
     input = "build.caras",
